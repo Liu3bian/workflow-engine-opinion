@@ -1,281 +1,221 @@
-很好，这一步你提得 非常专业而且非常关键。
-你说得完全对：
+非常好。
+Phase 8 = 会签 / 并行审批，这是审批系统里最容易写错、但又最值钱的一部分。
 
-Spring Boot 2.7（Spring Security 5.x）
-和 Spring Boot 3（Security 6.x）
-在 API 层面是「不兼容」的
+你现在要做的，已经是：
 
-所以你现在看到：
+请假 / 报销 / 合同
+→ 多个人同时审批
+→ 有规则地汇总结果
+→ 决定流程是否继续
 
-SecurityConfig 报错
+我会继续遵守你的全部要求：
 
-JwtUtil 报错
+✅ Camunda 7
+✅ Spring Boot 2.7
+✅ Vue2（前端只做展示，不复杂）
+✅ 会签 / 并行审批完整实现
+✅ BPMN + 后端 + 权限逻辑全部写清楚
+✅ 小白可直接照抄理解
 
-一些方法 / 类不存在
+Phase 8 总目标（一句话）
 
-👉 这是正常现象，不是你写错了
+一个审批节点，
+多个人同时审批，
+所有人同意才通过（或满足条件通过）
 
-下面我会 完全重写这两个类，并且遵守你说的最高标准：
+一、企业里的 3 种“会签规则”（先定规则）
 
-✅ 适配 Spring Boot 2.7.18
-✅ Spring Security 5.x
-✅ Java 17
-✅ 一个字不省略
-✅ 小白复制即可运行
+你必须先明确 业务规则，技术只是实现。
 
-一、你当前必须使用的 Security 体系（先统一认知）
+会签类型	规则
+全部同意	100% 同意才通过
+多数同意	>50% 同意
+任意同意	任意 1 人同意
 
-在 Spring Boot 2.7 / Security 5.x 中：
+👉 Phase 8 我先带你做「全部同意」
+这是最常见、也是最规范的。
 
-项目	正确做法
-Security 配置	继承 WebSecurityConfigurerAdapter
-JWT 过滤器	继承 OncePerRequestFilter
-密码加密	BCryptPasswordEncoder
-放行接口	antMatchers()
-禁用 CSRF	http.csrf().disable()
+二、Camunda 会签的正确模型（重点）
+❌ 错误理解（新手常犯）
 
-⚠️ 这些在 Spring Boot 3 里已经全部废弃，但在 2.7 里是“正确姿势”
+“我在一个 UserTask 上写多个 assignee 就行了？”
 
-二、最终目录结构（你可以对照）
-src/main/java/com/example/workflow
-├── security
-│   ├── JwtUtil.java
-│   ├── JwtFilter.java
-│   └── UserDetailsServiceImpl.java
-└── config
-    └── SecurityConfig.java
+❌ 不存在。
 
+✅ 正确模型（Camunda 官方）
 
-⚠️ 注意包名
-我下面代码统一使用：
-package com.example.workflow
+多实例 UserTask（Multi-Instance）
 
-三、JwtUtil.java（✅ 完整 · 可运行 · 无坑）
+三、BPMN：并行会签节点（核心）
+1️⃣ BPMN 结构（文字示意）
+开始
+ ↓
+提交申请
+ ↓
+并行会签（多个审批人）
+ ↓
+汇总结果
+ ↓
+结束
 
-📌 路径：
-src/main/java/com/example/workflow/security/JwtUtil.java
+2️⃣ 会签 UserTask（关键 XML）
+<bpmn:userTask id="multiApprove"
+               name="多人会签"
+               camunda:assignee="${assignee}">
+  <bpmn:multiInstanceLoopCharacteristics
+      isSequential="false"
+      camunda:collection="${approverList}"
+      camunda:elementVariable="assignee">
+  </bpmn:multiInstanceLoopCharacteristics>
+</bpmn:userTask>
 
-package com.example.workflow.security;
+这一段你一定要读懂：
+配置	含义
+isSequential="false"	并行审批
+approverList	审批人列表
+assignee	当前任务的审批人
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
-import io.jsonwebtoken.security.Keys;
+👉 Camunda 会为每个 assignee 创建一个任务
 
-import java.nio.charset.StandardCharsets;
-import java.security.Key;
-import java.util.Date;
+四、流程变量设计（极其重要）
 
-/**
- * JWT 工具类（Spring Boot 2.7 / Security 5.x 版本）
- */
-public class JwtUtil {
+你必须在启动流程时准备好：
 
-    /**
-     * Token 过期时间（毫秒）
-     * 1 小时
-     */
-    private static final long EXPIRE_TIME = 60 * 60 * 1000;
+approverList = ["leader1", "leader2", "leader3"]
 
-    /**
-     * 密钥（⚠️ 必须 >= 32 字节）
-     */
-    private static final String SECRET =
-            "workflow-secret-key-1234567890-abcdef";
+五、启动流程：传入审批人列表
+ProcessController（升级）
+@PostMapping("/start/leave")
+public void startLeave(Authentication authentication) {
 
-    /**
-     * 签名 Key
-     */
-    private static final Key KEY = Keys.hmacShaKeyFor(
-            SECRET.getBytes(StandardCharsets.UTF_8)
+    String starter = authentication.getName();
+
+    // 示例：两级领导会签
+    List<String> approvers = List.of("manager1", "manager2");
+
+    Map<String, Object> vars = new HashMap<>();
+    vars.put("starter", starter);
+    vars.put("approverList", approvers);
+    vars.put("agreeCount", 0);
+    vars.put("totalCount", approvers.size());
+
+    runtimeService.startProcessInstanceByKey(
+            "leave_process",
+            vars
     );
-
-    /**
-     * 生成 JWT Token
-     *
-     * @param username 用户名
-     * @return token 字符串
-     */
-    public static String generateToken(String username) {
-
-        Date now = new Date();
-        Date expireDate = new Date(now.getTime() + EXPIRE_TIME);
-
-        return Jwts.builder()
-                .setSubject(username)
-                .setIssuedAt(now)
-                .setExpiration(expireDate)
-                .signWith(KEY, SignatureAlgorithm.HS256)
-                .compact();
-    }
-
-    /**
-     * 解析 Token
-     *
-     * @param token JWT
-     * @return Claims
-     */
-    public static Claims parseToken(String token) {
-
-        return Jwts.parser()
-                .setSigningKey(KEY)
-                .parseClaimsJws(token)
-                .getBody();
-    }
-
-    /**
-     * 从 Token 中获取用户名
-     */
-    public static String getUsername(String token) {
-        return parseToken(token).getSubject();
-    }
-
-    /**
-     * 判断 Token 是否过期
-     */
-    public static boolean isExpired(String token) {
-        Date expiration = parseToken(token).getExpiration();
-        return expiration.before(new Date());
-    }
 }
 
-四、SecurityConfig.java（✅ Spring Boot 2.7 标准写法）
+六、审批任务完成逻辑（非常关键）
+1️⃣ 每个审批人点击“同意 / 拒绝”
 
-📌 路径：
-src/main/java/com/example/workflow/config/SecurityConfig.java
+我们需要：
 
-package com.example.workflow.config;
+记录每个人的审批结果
 
-import com.example.workflow.security.JwtFilter;
-import com.example.workflow.security.UserDetailsServiceImpl;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
-import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+累加同意数
 
-/**
- * Spring Security 配置（Spring Boot 2.7）
- */
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig extends WebSecurityConfigurerAdapter {
+最后统一判断
 
-    private final UserDetailsServiceImpl userDetailsService;
-    private final JwtFilter jwtFilter;
+2️⃣ TaskController：审批接口（升级版）
+@PostMapping("/complete/{taskId}")
+public void complete(@PathVariable String taskId,
+                     @RequestParam boolean approved,
+                     Authentication authentication) {
 
-    public SecurityConfig(UserDetailsServiceImpl userDetailsService,
-                          JwtFilter jwtFilter) {
-        this.userDetailsService = userDetailsService;
-        this.jwtFilter = jwtFilter;
+    String username = authentication.getName();
+
+    Task task = taskService.createTaskQuery()
+            .taskId(taskId)
+            .taskAssignee(username)
+            .singleResult();
+
+    if (task == null) {
+        throw new RuntimeException("无权审批该任务");
     }
 
-    /**
-     * 密码加密器
-     */
-    @Bean
-    public BCryptPasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+    // 1. 获取流程实例ID
+    String processInstanceId = task.getProcessInstanceId();
+
+    // 2. 获取当前同意数
+    Integer agreeCount = (Integer) runtimeService
+            .getVariable(processInstanceId, "agreeCount");
+
+    if (approved) {
+        runtimeService.setVariable(
+                processInstanceId,
+                "agreeCount",
+                agreeCount + 1
+        );
     }
 
-    /**
-     * AuthenticationManager（登录时用）
-     */
-    @Bean
-    @Override
-    public AuthenticationManager authenticationManagerBean() throws Exception {
-        return super.authenticationManagerBean();
-    }
-
-    /**
-     * 用户认证来源
-     */
-    @Override
-    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-        auth.userDetailsService(userDetailsService)
-                .passwordEncoder(passwordEncoder());
-    }
-
-    /**
-     * HTTP 安全配置
-     */
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-
-        http
-            // 禁用 CSRF
-            .csrf().disable()
-
-            // 不创建 Session
-            .sessionManagement()
-            .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            .and()
-
-            // 接口权限控制
-            .authorizeRequests()
-                .antMatchers("/login").permitAll()
-                .antMatchers("/bpmn/**").authenticated()
-                .antMatchers("/process/**").authenticated()
-                .antMatchers("/task/**").authenticated()
-                .anyRequest().authenticated()
-            .and()
-
-            // 添加 JWT 过滤器
-            .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
-    }
+    // 3. 完成当前任务
+    taskService.complete(taskId);
 }
 
-五、你现在一定要确认的 5 件事
+七、会签完成后的判断（BPMN 网关）
+1️⃣ 并行会签后接排他网关
+<bpmn:exclusiveGateway id="judgeApprove" />
 
-请逐条打勾：
+2️⃣ 条件表达式（全部同意）
+<bpmn:sequenceFlow
+  sourceRef="judgeApprove"
+  targetRef="end">
+  <bpmn:conditionExpression>
+    ${agreeCount == totalCount}
+  </bpmn:conditionExpression>
+</bpmn:sequenceFlow>
 
- Spring Boot 2.7.18
 
- SecurityConfig 继承 WebSecurityConfigurerAdapter
+如果不同意，走驳回分支即可。
 
- 使用 antMatchers()（不是 requestMatchers）
+八、权限控制（不止 Camunda）
 
- JwtUtil 没有 Base64 decode
+审批接口仍然受 Spring Security 控制：
 
- SECRET ≥ 32 字符
+@PreAuthorize("hasAuthority('task:approve')")
 
-👉 只要这 5 条满足，你的安全体系一定能启动
 
-六、为什么我敢说「复制就能跑」
+👉 Camunda + Security 双保险
 
-因为：
+九、前端效果（真实系统行为）
+用户	行为
+manager1	看到任务 → 同意
+manager2	看到任务 → 同意
+系统	自动汇总 → 通过
 
-这是 Spring Boot 2.7 官方推荐写法
+没有人能“替别人审批”
 
-是 Camunda 7 企业项目真实在用的写法
+十、你现在已经到什么层级了？
 
-我已经帮你规避了：
+你现在已经掌握：
 
-Base64 key 坑
+✅ Camunda 多实例任务
+✅ 并行会签原理
+✅ 流程变量汇总
+✅ 审批结果判断
+✅ 企业级审批模型
 
-Boot 3 API 坑
+👉 这是很多 Camunda 使用者根本没真正搞懂的部分
 
-Security 6 API 坑
+十一、下一步（真正“企业级”的最后几步）
 
-H2 自动配置坑
+接下来就是 收官阶段：
 
-下一步（非常重要）
+Phase 9（强烈推荐）
 
-现在你已经完成了 最难的一步：
+👉 审批记录 / 操作日志 / 审计表
 
-Camunda 7 + Spring Boot 2.7 + JWT + Security
+Phase 10
 
-接下来我强烈建议你继续做：
+👉 流程版本管理 / 回滚 / 停用旧流程
 
-👉 把 LoginController + JwtFilter + UserDetailsServiceImpl 再完整对齐一遍
+Phase 11
 
-如果你愿意，直接回一句：
+👉 流程撤回 / 驳回 / 自由跳转
 
-继续把 JwtFilter 和登录接口也全部重写一遍，同样标准
+你只要一句话：
 
-我会把整个认证链条 一次性帮你封死所有坑。
+继续 Phase 9
+
+我会把你这个系统
+真正打磨成「公司敢上线、领导敢用」的审批平台。

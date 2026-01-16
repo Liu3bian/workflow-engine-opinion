@@ -1,0 +1,256 @@
+非常好。
+Phase 7 是整个系统“质变”的一步 ——
+从「后台写 BPMN」升级为「业务人员在前端画流程」。
+
+这一阶段你会真正做出一个 像钉钉 / 飞书 / OA 那样的流程平台。
+
+我会继续遵守你定下的铁律：
+
+✅ Vue2 + vue-admin-template
+✅ Camunda 7
+✅ Spring Boot 2.7
+✅ 前端画 BPMN（bpmn-js）
+✅ 后端动态部署流程
+✅ 目录结构 + 完整代码 + 不省略
+✅ 小白可照抄跑起来
+
+Phase 7 总目标（一句话）
+
+前端使用 BPMN 设计器画流程 →
+导出 XML →
+后端 Camunda Runtime 动态部署 →
+新流程立即可用
+
+一、整体架构（你必须先看懂）
+Vue 流程设计器
+  ↓ 生成 BPMN XML
+  ↓
+POST /process/deploy
+  ↓
+Spring Boot
+  ↓
+RepositoryService.deploy()
+  ↓
+Camunda 引擎
+
+二、前端：流程设计器选型（关键）
+✅ 唯一正确选择：bpmn-js
+
+这是 Camunda 官方同源生态，不是第三方玩具。
+
+1️⃣ 安装依赖（Vue2）
+npm install bpmn-js --save
+
+三、前端目录结构（vue-admin-template）
+src
+├── views
+│   └── process
+│       └── designer.vue
+├── api
+│   └── process.js
+
+四、前端：流程设计器页面（完整）
+
+📌 路径：
+src/views/process/designer.vue
+
+<template>
+  <div class="app-container">
+    <div class="toolbar">
+      <el-input v-model="processKey" placeholder="流程KEY" />
+      <el-button type="primary" @click="deploy">部署流程</el-button>
+    </div>
+
+    <div ref="canvas" class="bpmn-canvas"></div>
+  </div>
+</template>
+
+<script>
+import BpmnModeler from 'bpmn-js/lib/Modeler'
+import { deployProcess } from '@/api/process'
+
+export default {
+  name: 'ProcessDesigner',
+  data() {
+    return {
+      modeler: null,
+      processKey: ''
+    }
+  },
+  mounted() {
+    this.initModeler()
+  },
+  methods: {
+    initModeler() {
+      this.modeler = new BpmnModeler({
+        container: this.$refs.canvas
+      })
+
+      const xml = `
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+targetNamespace="http://example.com">
+<bpmn:process id="demo_process" isExecutable="true">
+<bpmn:startEvent id="start" />
+</bpmn:process>
+</bpmn:definitions>
+`
+      this.modeler.importXML(xml)
+    },
+
+    async deploy() {
+      const { xml } = await this.modeler.saveXML({ format: true })
+
+      await deployProcess({
+        processKey: this.processKey,
+        xml
+      })
+
+      this.$message.success('流程部署成功')
+    }
+  }
+}
+</script>
+
+<style>
+.bpmn-canvas {
+  width: 100%;
+  height: 600px;
+  border: 1px solid #ccc;
+}
+.toolbar {
+  margin-bottom: 10px;
+}
+</style>
+
+五、前端 API 封装
+
+📌 路径：
+src/api/process.js
+
+import request from '@/utils/request'
+
+export function deployProcess(data) {
+  return request({
+    url: '/process/deploy',
+    method: 'post',
+    data
+  })
+}
+
+六、后端：流程部署接口设计
+目录结构
+controller
+└── ProcessDeployController.java
+
+ProcessDeployController.java（完整）
+package com.example.workflow.controller;
+
+import org.camunda.bpm.engine.RepositoryService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/process")
+public class ProcessDeployController {
+
+    @Autowired
+    private RepositoryService repositoryService;
+
+    /**
+     * 动态部署流程
+     */
+    @PostMapping("/deploy")
+    public void deploy(@RequestBody DeployRequest request) {
+
+        repositoryService.createDeployment()
+                .name(request.getProcessKey())
+                .addString(
+                        request.getProcessKey() + ".bpmn",
+                        request.getXml()
+                )
+                .deploy();
+    }
+}
+
+DeployRequest.java（DTO）
+package com.example.workflow.controller;
+
+public class DeployRequest {
+
+    private String processKey;
+    private String xml;
+
+    public String getProcessKey() {
+        return processKey;
+    }
+
+    public void setProcessKey(String processKey) {
+        this.processKey = processKey;
+    }
+
+    public String getXml() {
+        return xml;
+    }
+
+    public void setXml(String xml) {
+        this.xml = xml;
+    }
+}
+
+七、权限控制（必须有）
+SecurityConfig 中限制
+.antMatchers("/process/deploy").hasAuthority("process:create")
+
+
+👉 只有有权限的人才能部署流程
+
+八、部署后会发生什么？（关键理解）
+
+Camunda 会自动：
+
+1️⃣ 解析 BPMN XML
+2️⃣ 创建流程定义
+3️⃣ 生成版本号
+4️⃣ 新流程立刻可启动
+
+你可以：
+
+runtimeService.startProcessInstanceByKey("demo_process");
+
+九、你现在已经完成了什么？
+
+你已经实现了：
+
+✅ Web 流程设计器
+✅ BPMN 可视化编辑
+✅ 动态部署流程
+✅ 与权限系统打通
+✅ 企业级流程平台核心
+
+这一阶段，已经超过绝大多数“只会用 Camunda”的人
+
+十、接下来就是「王炸阶段」
+
+接下来三个 Phase，都是高级实战：
+
+Phase 8（强烈推荐）
+
+👉 并行审批 / 会签 / 多人审批
+
+Phase 9
+
+👉 流程历史 / 审批记录 / 审计日志
+
+Phase 10
+
+👉 流程版本管理 / 回滚 / 灰度发布
+
+你只需要说一句：
+
+继续 Phase 8
+
+我会把你这个系统
+真正打磨成“企业级 BPM 平台”。

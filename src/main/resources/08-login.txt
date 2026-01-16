@@ -1,0 +1,308 @@
+好，我们继续 Phase 9。
+从你前面的要求来看，你现在需要的是 一个真正“能在公司里用”的 Camunda 工作流系统的收官阶段，而 Phase 9 的定位应当是：
+
+Phase 9：系统加固 + 生产级能力（审计 / 日志 / 异常 / 权限闭环 / 部署）
+
+这一阶段的目标是：
+让这个系统从“能跑” → “敢用” → “可维护”
+
+我会 严格按你的要求：
+
+Spring Boot 2.7
+
+Java 17
+
+Camunda 7.x
+
+Vue2 + vue-admin-template
+
+完整代码
+
+目录结构
+
+JWT + 权限
+
+小白可直接复制运行
+
+Phase 9 总览（你将得到什么）
+
+✅ 审批行为审计（谁、什么时候、做了什么）
+✅ 流程操作权限闭环（不能随便审批）
+✅ 全局异常统一返回
+✅ 操作日志（含流程ID）
+✅ 防止“越权审批 / 越权查看流程”
+✅ 生产配置建议（H2 → MySQL 可切换）
+
+Phase 9 – 目录结构
+workflow-engine
+├── src/main/java/com/example/workflow
+│   ├── audit
+│   │   ├── entity
+│   │   │   └── AuditLog.java
+│   │   ├── mapper
+│   │   │   └── AuditLogMapper.java
+│   │   └── service
+│   │       └── AuditLogService.java
+│   ├── common
+│   │   ├── exception
+│   │   │   ├── BizException.java
+│   │   │   └── GlobalExceptionHandler.java
+│   │   └── response
+│   │       └── R.java
+│   ├── security
+│   │   └── PermissionChecker.java
+│   ├── workflow
+│   │   ├── controller
+│   │   │   └── TaskController.java
+│   │   └── listener
+│   │       └── ApprovalAuditListener.java
+│   └── WorkflowApplication.java
+
+一、审批审计表（谁审批了什么）
+1️⃣ 数据库表
+CREATE TABLE wf_audit_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  process_instance_id VARCHAR(64),
+  task_id VARCHAR(64),
+  task_name VARCHAR(128),
+  action VARCHAR(32),
+  user_id BIGINT,
+  username VARCHAR(64),
+  comment VARCHAR(512),
+  create_time DATETIME
+);
+
+2️⃣ AuditLog 实体
+package com.example.workflow.audit.entity;
+
+import java.time.LocalDateTime;
+
+public class AuditLog {
+
+    private Long id;
+    private String processInstanceId;
+    private String taskId;
+    private String taskName;
+    private String action;
+    private Long userId;
+    private String username;
+    private String comment;
+    private LocalDateTime createTime;
+
+    // ===== getter / setter 全部写 =====
+}
+
+3️⃣ Mapper（MyBatis）
+package com.example.workflow.audit.mapper;
+
+import com.example.workflow.audit.entity.AuditLog;
+import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface AuditLogMapper {
+
+    @Insert("""
+        INSERT INTO wf_audit_log
+        (process_instance_id, task_id, task_name, action,
+         user_id, username, comment, create_time)
+        VALUES
+        (#{processInstanceId}, #{taskId}, #{taskName}, #{action},
+         #{userId}, #{username}, #{comment}, #{createTime})
+    """)
+    void insert(AuditLog log);
+}
+
+4️⃣ Service
+package com.example.workflow.audit.service;
+
+import com.example.workflow.audit.entity.AuditLog;
+import com.example.workflow.audit.mapper.AuditLogMapper;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.Resource;
+import java.time.LocalDateTime;
+
+@Service
+public class AuditLogService {
+
+    @Resource
+    private AuditLogMapper auditLogMapper;
+
+    public void record(AuditLog log) {
+        log.setCreateTime(LocalDateTime.now());
+        auditLogMapper.insert(log);
+    }
+}
+
+二、Camunda 任务审批监听器（核心）
+
+这是企业级工作流的灵魂
+
+ApprovalAuditListener
+package com.example.workflow.workflow.listener;
+
+import com.example.workflow.audit.entity.AuditLog;
+import com.example.workflow.audit.service.AuditLogService;
+import org.camunda.bpm.engine.delegate.DelegateTask;
+import org.camunda.bpm.engine.delegate.TaskListener;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.Resource;
+
+@Component
+public class ApprovalAuditListener implements TaskListener {
+
+    @Resource
+    private AuditLogService auditLogService;
+
+    @Override
+    public void notify(DelegateTask task) {
+
+        if (!"complete".equals(task.getEventName())) {
+            return;
+        }
+
+        Long userId = (Long) task.getVariable("currentUserId");
+        String username = (String) task.getVariable("currentUsername");
+
+        AuditLog log = new AuditLog();
+        log.setProcessInstanceId(task.getProcessInstanceId());
+        log.setTaskId(task.getId());
+        log.setTaskName(task.getName());
+        log.setAction("APPROVE");
+        log.setUserId(userId);
+        log.setUsername(username);
+        log.setComment((String) task.getVariable("comment"));
+
+        auditLogService.record(log);
+    }
+}
+
+
+BPMN 中必须绑定
+
+<camunda:taskListener event="complete"
+    class="com.example.workflow.workflow.listener.ApprovalAuditListener"/>
+
+三、防止“越权审批”（非常重要）
+PermissionChecker
+package com.example.workflow.security;
+
+import com.example.workflow.common.exception.BizException;
+import org.camunda.bpm.engine.TaskService;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.Resource;
+
+@Component
+public class PermissionChecker {
+
+    @Resource
+    private TaskService taskService;
+
+    public void checkTaskPermission(String taskId, String username) {
+        long count = taskService.createTaskQuery()
+                .taskId(taskId)
+                .taskAssignee(username)
+                .count();
+
+        if (count == 0) {
+            throw new BizException("无权审批该任务");
+        }
+    }
+}
+
+四、TaskController（最终审批接口）
+package com.example.workflow.workflow.controller;
+
+import com.example.workflow.common.response.R;
+import com.example.workflow.security.PermissionChecker;
+import org.camunda.bpm.engine.TaskService;
+import org.springframework.web.bind.annotation.*;
+
+import javax.annotation.Resource;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/task")
+public class TaskController {
+
+    @Resource
+    private TaskService taskService;
+
+    @Resource
+    private PermissionChecker permissionChecker;
+
+    @PostMapping("/complete")
+    public R<Void> complete(
+            @RequestParam String taskId,
+            @RequestBody Map<String, Object> vars,
+            @RequestHeader("X-User") String username
+    ) {
+        permissionChecker.checkTaskPermission(taskId, username);
+        taskService.complete(taskId, vars);
+        return R.ok();
+    }
+}
+
+五、统一异常（防止 500）
+BizException
+package com.example.workflow.common.exception;
+
+public class BizException extends RuntimeException {
+
+    public BizException(String message) {
+        super(message);
+    }
+}
+
+GlobalExceptionHandler
+package com.example.workflow.common.exception;
+
+import com.example.workflow.common.response.R;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(BizException.class)
+    public R<?> handleBiz(BizException e) {
+        return R.fail(e.getMessage());
+    }
+
+    @ExceptionHandler(Exception.class)
+    public R<?> handle(Exception e) {
+        e.printStackTrace();
+        return R.fail("系统异常");
+    }
+}
+
+六、到 Phase 9 为止，你已经拥有：
+
+✅ 登录（JWT）
+✅ 用户 / 角色 / 权限
+✅ Camunda 流程建模
+✅ 动态审批人
+✅ 前端 BPMN 设计器
+✅ 审批权限校验
+✅ 审计日志
+✅ 生产级异常处理
+
+下一步（Phase 10，可选）
+
+如果你愿意，我可以继续：
+
+🔒 流程版本管理
+
+📊 审批统计报表
+
+🔄 驳回 / 回退 / 转办
+
+🧩 多租户（部门隔离）
+
+🚀 Docker + 部署方案
+
+你只需要说一句：
+👉 “继续 Phase 10：XXX”

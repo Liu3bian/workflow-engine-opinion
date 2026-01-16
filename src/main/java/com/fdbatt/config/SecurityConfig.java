@@ -4,42 +4,77 @@ import com.fdbatt.security.UserDetailsServiceImpl;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
-public class SecurityConfig {
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+    private final UserDetailsServiceImpl userDetailsService;
+    private final JwtFilter jwtFilter;
+
+    public SecurityConfig(UserDetailsServiceImpl userDetailsService,
+                          JwtFilter jwtFilter) {
+        this.userDetailsService = userDetailsService;
+        this.jwtFilter = jwtFilter;
+    }
+
+    /**
+     * 密码加密器
+     */
     @Bean
     public BCryptPasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+    /**
+     * AuthenticationManager（登录时用）
+     */
     @Bean
-    public SecurityFilterChain filterChain(
-            HttpSecurity http,
-            UserDetailsServiceImpl userDetailsService) throws Exception {
-
-        JwtFilter jwtFilter = new JwtFilter(userDetailsService);
-
-        http.csrf(csrf -> csrf.disable())
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/login").permitAll()
-                        .requestMatchers("/process/**")
-                        .hasAuthority("process:start")
-                        .anyRequest().authenticated()
-                )
-                .addFilterBefore(jwtFilter,
-                        UsernamePasswordAuthenticationFilter.class);
-
-        return http.build();
+    @Override
+    public AuthenticationManager authenticationManagerBean() throws Exception {
+        return super.authenticationManagerBean();
     }
 
-    @Bean
-    public AuthenticationManager authenticationManager(
-            AuthenticationConfiguration config) throws Exception {
-        return config.getAuthenticationManager();
+    /**
+     * 用户认证来源
+     */
+    @Override
+    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+        auth.userDetailsService(userDetailsService)
+                .passwordEncoder(passwordEncoder());
+    }
+
+    /**
+     * HTTP 安全配置
+     */
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+
+        http
+                // 禁用 CSRF
+                .csrf().disable()
+
+                // 不创建 Session
+                .sessionManagement()
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+
+                // 接口权限控制
+                .authorizeRequests()
+                .antMatchers("/login").permitAll()
+                .antMatchers("/bpmn/**").authenticated()
+                .antMatchers("/process/**").authenticated()
+                .antMatchers("/task/**").authenticated()
+                .anyRequest().authenticated()
+                .and()
+
+                // 添加 JWT 过滤器
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
     }
 }

@@ -1,0 +1,217 @@
+太好了。
+Phase 6 = 审批系统“是否像真公司”的分水岭。
+
+从这一阶段开始，我们要解决 所有真实企业都会问的问题：
+
+❓“这个流程不是写死给某个角色的，
+能不能根据发起人，自动找他的上级来审批？”
+
+答案是：可以，而且这正是 Camunda 的强项。
+
+我会继续保持你的标准：
+
+✅ Spring Boot 2.7
+✅ Camunda 7
+✅ JWT + Security 已完成
+✅ 动态审批人（变量驱动）
+✅ 代码 + BPMN + 表结构 + Controller 全写全
+✅ 小白可直接照抄
+
+Phase 6 总目标（一句话）
+
+审批人不是写死在 BPMN 里的，而是：
+登录用户 → 查上级 → 写入流程变量 → Camunda 自动指派任务
+
+一、企业里“动态审批人”的 3 种常见模式
+
+你在公司里 99% 会遇到下面三种：
+
+模式	说明
+发起人自己	填表节点
+发起人上级	请假 / 报销
+某角色 + 条件	金额 > 10 万 → 总监
+
+👉 Phase 6 解决前两种
+
+二、数据库设计（上级关系）
+1️⃣ sys_user 表升级（非常关键）
+ALTER TABLE sys_user
+ADD COLUMN leader_id BIGINT NULL;
+
+含义
+字段	含义
+leader_id	直属上级的 user.id
+2️⃣ 示例数据
+-- admin 是 leader
+UPDATE sys_user SET leader_id = 1 WHERE username = 'user1';
+
+三、BPMN 核心思想（先理解）
+❌ 错误做法（写死）
+camunda:candidateGroups="ROLE_MANAGER"
+
+✅ 正确做法（变量）
+camunda:assignee="${approver}"
+
+
+👉 谁是 approver？
+由你在启动流程时决定
+
+四、BPMN 示例（完整思路）
+1️⃣ 审批节点（UserTask）
+<bpmn:userTask id="leaderApprove"
+               name="直属领导审批"
+               camunda:assignee="${leader}">
+</bpmn:userTask>
+
+
+📌 含义一句话：
+
+leader 变量的值 = 某个用户名
+
+五、流程启动时：写入“动态审批人”
+目录结构
+controller
+└── ProcessController.java
+service
+└── UserService.java
+mapper
+└── UserMapper.java（已存在）
+
+1️⃣ UserService（查上级）
+package com.example.workflow.service;
+
+import com.example.workflow.entity.SysUser;
+import com.example.workflow.mapper.UserMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Service
+public class UserService {
+
+    @Autowired
+    private UserMapper userMapper;
+
+    public SysUser findLeaderByUsername(String username) {
+
+        SysUser user = userMapper.findByUsername(username);
+        if (user == null || user.getLeaderId() == null) {
+            return null;
+        }
+        return userMapper.findById(user.getLeaderId());
+    }
+}
+
+
+⚠️ 如果你还没有 findById，马上补
+
+@Select("select * from sys_user where id = #{id}")
+SysUser findById(Long id);
+
+2️⃣ ProcessController（启动流程）
+package com.example.workflow.controller;
+
+import com.example.workflow.entity.SysUser;
+import com.example.workflow.service.UserService;
+import org.camunda.bpm.engine.RuntimeService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/process")
+public class ProcessController {
+
+    @Autowired
+    private RuntimeService runtimeService;
+
+    @Autowired
+    private UserService userService;
+
+    /**
+     * 启动请假流程
+     */
+    @PostMapping("/start/leave")
+    public void startLeaveProcess(Authentication authentication) {
+
+        String starter = authentication.getName();
+
+        SysUser leader = userService.findLeaderByUsername(starter);
+        if (leader == null) {
+            throw new RuntimeException("未配置直属领导");
+        }
+
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("starter", starter);
+        vars.put("leader", leader.getUsername());
+
+        runtimeService.startProcessInstanceByKey(
+                "leave_process",
+                vars
+        );
+    }
+}
+
+
+📌 这一步是 Phase 6 的灵魂
+
+六、任务会自动发生什么？
+
+当流程走到：
+
+camunda:assignee="${leader}"
+
+
+Camunda 会：
+
+1️⃣ 从流程变量取 leader
+2️⃣ 值 = "manager01"
+3️⃣ 任务 只会出现在 manager01 的待办中
+
+七、前端看到的效果（非常真实）
+用户	能看到的任务
+普通员工	❌ 看不到
+直属领导	✅ 看到审批任务
+管理员	❌（除非也是 leader）
+
+👉 这就是“动态审批人”
+
+八、升级：多级审批（扩展）
+
+你可以继续往上：
+
+vars.put("leader1", leader.getUsername());
+vars.put("leader2", leader.getLeaderUsername());
+
+
+BPMN：
+
+camunda:assignee="${leader2}"
+
+九、你现在已经完成了什么（非常重要）
+
+你已经实现了：
+
+✅ 用户上下级关系
+✅ 启动流程时动态计算审批人
+✅ BPMN 变量驱动任务指派
+✅ 完全脱离“写死角色”
+✅ 企业真实审批模型
+
+这是 OA / ERP / BPM 系统的核心能力
+
+十、下一步（更高级，任选）
+
+下面这些已经是 中高级 BPM 项目能力：
+
+1️⃣ Phase 7：前端流程设计器（Vue 画 BPMN + 部署）
+2️⃣ Phase 8：会签 / 并行审批（多人同时批）
+3️⃣ Phase 9：审批记录 / 操作日志 / 审计
+
+你只需要回一句：
+
+继续 Phase X
+
+我会继续 一层一层把你这个系统打磨到“公司敢上线”级别。
