@@ -2,39 +2,50 @@ package com.fdbatt.controller;
 
 import com.fdbatt.config.JwtUtil;
 import com.fdbatt.dto.LoginRequest;
+import com.fdbatt.vo.LoginResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.HashMap;
-import java.util.Map;
 
 @RestController
 public class AuthController {
-    private final AuthenticationManager authenticationManager;
+    @Autowired
+    private AuthenticationManager authenticationManager;
 
-    public AuthController(AuthenticationManager authenticationManager) {
-        this.authenticationManager = authenticationManager;
-    }
-
+    /**
+     * 登录接口
+     */
     @PostMapping("/login")
-    public Map<String, String> login(@RequestBody LoginRequest req) {
+    public LoginResponse login(@RequestBody LoginRequest request) {
 
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        req.getUsername(), req.getPassword()
-                )
-        );
+        try {
+            // 1. 构造认证对象
+            UsernamePasswordAuthenticationToken authToken =
+                    new UsernamePasswordAuthenticationToken(
+                            request.getUsername(),
+                            request.getPassword()
+                    );
 
-        String token = JwtUtil.createToken(req.getUsername());
+            // 2. 交给 Spring Security 认证
+            Authentication authentication =
+                    authenticationManager.authenticate(authToken);
 
-        Map<String, String> res = new HashMap<>();
-        res.put("token", token);
-        return res;
+            // 3. 认证成功，生成 JWT
+            String token = JwtUtil.generateToken(request.getUsername());
+
+            // 4. 返回 Token
+            return new LoginResponse(token);
+
+        } catch (AuthenticationException e) {
+            // 认证失败
+            throw new RuntimeException("用户名或密码错误");
+        }
     }
-
-    @GetMapping("test")
+    @GetMapping("success")
     public String test() {
-        return "success curl";
+        return "success hello world";
     }
 }

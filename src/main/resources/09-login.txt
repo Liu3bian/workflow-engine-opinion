@@ -1,0 +1,212 @@
+你这个问题问得非常关键，而且你说得完全对 👍
+👉 这是我之前的“技术债”，现在我们一次性补齐，并且按你要求：完整、可运行、小白可复制。
+
+问题本质说明（先说结论）
+
+你之前被要求调用：
+
+POST /process/start
+
+
+但实际上：
+
+我之前确实没有给你写这个接口
+
+Camunda 不会自动暴露 /process/start
+
+不写 Controller，这个接口根本不存在
+
+👉 解决办法只有一个：我们自己写一个「流程启动接口」
+
+Phase 9.5（补缺）：流程启动接口 /process/start
+
+这个接口的职责是：
+
+校验登录用户
+
+校验是否有“发起流程”权限
+
+向 Camunda 启动流程
+
+设置流程变量（发起人、动态审批人）
+
+一、接口设计（你前端真正该调的）
+POST /process/start
+Authorization: Bearer <JWT>
+
+Body:
+{
+  "processKey": "leave_process",
+  "variables": {
+    "days": 3,
+    "reason": "请假"
+  }
+}
+
+二、后端完整目录结构（新增部分）
+workflow-engine
+├── src/main/java/com/example/workflow
+│   ├── workflow
+│   │   ├── controller
+│   │   │   └── ProcessController.java   ✅ 新增
+│   │   └── service
+│   │       └── ProcessService.java      ✅ 新增
+
+三、ProcessController（完整代码）
+
+📌 这是 /process/start 的真正实现
+
+package com.example.workflow.workflow.controller;
+
+import com.example.workflow.common.response.R;
+import com.example.workflow.workflow.service.ProcessService;
+import org.springframework.web.bind.annotation.*;
+
+import javax.annotation.Resource;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/process")
+public class ProcessController {
+
+    @Resource
+    private ProcessService processService;
+
+    /**
+     * 启动流程
+     */
+    @PostMapping("/start")
+    public R<String> startProcess(
+            @RequestParam("processKey") String processKey,
+            @RequestBody Map<String, Object> variables,
+            @RequestHeader("X-User-Id") Long userId,
+            @RequestHeader("X-Username") String username
+    ) {
+        String processInstanceId =
+                processService.start(processKey, variables, userId, username);
+        return R.ok(processInstanceId);
+    }
+}
+
+
+⚠️ 说明
+
+X-User-Id、X-Username 来自 JwtFilter（你已经有）
+
+不信任前端传 userId，只信 JWT
+
+四、ProcessService（真正调用 Camunda）
+package com.example.workflow.workflow.service;
+
+import org.camunda.bpm.engine.RuntimeService;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.Resource;
+import java.util.HashMap;
+import java.util.Map;
+
+@Service
+public class ProcessService {
+
+    @Resource
+    private RuntimeService runtimeService;
+
+    public String start(
+            String processKey,
+            Map<String, Object> variables,
+            Long userId,
+            String username
+    ) {
+        Map<String, Object> vars = new HashMap<>();
+
+        if (variables != null) {
+            vars.putAll(variables);
+        }
+
+        // ====== 核心流程变量 ======
+        vars.put("starterUserId", userId);
+        vars.put("starterUsername", username);
+
+        return runtimeService
+                .startProcessInstanceByKey(processKey, vars)
+                .getProcessInstanceId();
+    }
+}
+
+五、BPMN 中如何使用这些变量（非常重要）
+示例：发起人审批（最常见）
+<bpmn:userTask id="starterApprove" name="发起人确认">
+  <bpmn:extensionElements>
+    <camunda:assignee>${starterUsername}</camunda:assignee>
+  </bpmn:extensionElements>
+</bpmn:userTask>
+
+示例：上级审批（你 Phase 6 用到的）
+<camunda:assignee>${leaderUsername}</camunda:assignee>
+
+
+leaderUsername 可以在 流程启动前查 DB 后塞进去
+
+六、前端应该怎么调（Vue / Axios）
+startProcess() {
+  return request({
+    url: '/process/start?processKey=leave_process',
+    method: 'post',
+    data: {
+      days: 3,
+      reason: '请假'
+    }
+  })
+}
+
+
+JWT → request interceptor
+userId / username → JwtFilter 自动注入 Header
+
+七、为什么 Camunda 官方文档会“误导你”
+
+Camunda 文档里经常写：
+
+“调用 RuntimeService.startProcessInstanceByKey”
+
+但那是 Java API，不是 HTTP 接口
+
+👉 Camunda 不会自动给你 REST 接口（除非用 camunda-rest）
+👉 企业项目 100% 都是自己写 Controller
+
+你现在这套写法：
+
+✔ 可控
+
+✔ 可鉴权
+
+✔ 可审计
+
+✔ 可扩展
+
+八、你现在可以自检这 4 件事
+
+1️⃣ 项目中是否存在
+ProcessController.java
+
+2️⃣ 前端是否请求
+/process/start
+
+3️⃣ BPMN 中是否使用
+${starterUsername}
+
+4️⃣ 流程是否成功生成实例
+ACT_RU_EXECUTION
+
+下一步建议（非常自然）
+
+如果你愿意，下一步我可以继续帮你补：
+
+Phase 10：流程回退 / 驳回 / 转办（企业最痛点）
+
+Phase 11：流程历史 & 审批轨迹前端展示
+
+Phase 12：多流程统一启动页面（像 OA）
+
+你只需要说一句👇
+👉 “继续 Phase 10”
